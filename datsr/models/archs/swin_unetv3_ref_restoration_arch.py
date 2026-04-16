@@ -772,13 +772,14 @@ class SwinBlock(nn.Module):
 
 
 class SwinUnetv3RestorationNet(nn.Module):
-    def __init__(self, ngf=64, n_blocks=16, groups=8, embed_dim=64, depths=(8,8), num_heads=(8,8), window_size=8, use_checkpoint=False):
+    def __init__(self, ngf=64, n_blocks=16, groups=8, embed_dim=64, depths=(8,8), num_heads=(8,8), window_size=8, use_checkpoint=False, use_margin_crop=False):
         super(SwinUnetv3RestorationNet, self).__init__()
         self.content_extractor = ContentExtractor(
             in_nc=3, out_nc=3, nf=ngf, n_blocks=n_blocks)
         self.dyn_agg_restore = DynamicAggregationRestoration(ngf=ngf, n_blocks=n_blocks, groups=groups,
                                             embed_dim=ngf, depths=depths, num_heads=num_heads,
-                                            window_size=window_size, use_checkpoint=use_checkpoint)
+                                            window_size=window_size, use_checkpoint=use_checkpoint,
+                                            use_margin_crop=use_margin_crop)
 
         arch_util.srntt_init_weights(self, init_type='normal', init_gain=0.02)
         self.re_init_dcn_offset()
@@ -836,10 +837,12 @@ class DynamicAggregationRestoration(nn.Module):
                  norm_layer=nn.LayerNorm,
                  ape=False,
                  patch_norm=True,
-                 use_checkpoint=False
+                 use_checkpoint=False,
+                 use_margin_crop=False
                  ):
         super(DynamicAggregationRestoration, self).__init__()
         self.use_checkpoint = use_checkpoint
+        self.use_margin_crop = use_margin_crop  # margin tiling 대응 center-crop 토글
         self.num_layers = len(depths)
         self.embed_dim = ngf
         self.ape = ape
@@ -937,6 +940,31 @@ class DynamicAggregationRestoration(nn.Module):
 
         self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
 
+    @staticmethod
+    def _center_crop(src: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Margin Tiling 보정: src 를 target 의 공간 해상도에 맞게 center-crop 한다.
+
+        relu1_1 에서 사용한 margin 을 m 이라 할 때 각 레벨의 crop 크기는:
+          relu1_1 (stride 1): margin = m
+          relu2_1 (stride 2): margin = m // 2
+          relu3_1 (stride 4): margin = m // 4
+        이를 하드코딩하지 않고 실제 텐서 크기 차이로 자동 계산한다.
+
+        Args:
+            src    : (B, C, Hs, Ws) — 마진이 포함된 Ref 피처 텐서
+            target : (B, C, Ht, Wt) — 크기 기준이 되는 Content 피처 텐서
+
+        Returns:
+            (B, C, Ht, Wt) center-cropped 텐서
+        """
+        _, _, th, tw = target.shape
+        _, _, sh, sw = src.shape
+        if sh == th and sw == tw:
+            return src
+        dh = (sh - th) // 2
+        dw = (sw - tw) // 2
+        return src[:, :, dh:dh + th, dw:dw + tw]
+
     def flow_warp(self,
                   x,
                   flow,
@@ -985,75 +1013,107 @@ class DynamicAggregationRestoration(nn.Module):
         pre_flow = pre_offset_flow_sim[1]
         pre_similarity = pre_offset_flow_sim[2]
 
+        # Flow warp 은 마진 포함 full 해상도에서 수행 (flow 와 feature 크기가 반드시 일치해야 함)
         pre_relu1_swapped_feat = self.flow_warp(img_ref_feat['relu1_1'], pre_flow['relu1_1'])
         pre_relu2_swapped_feat = self.flow_warp(img_ref_feat['relu2_1'], pre_flow['relu2_1'])
         pre_relu3_swapped_feat = self.flow_warp(img_ref_feat['relu3_1'], pre_flow['relu3_1'])
 
         # Unet
-        x0 = self.unet_head(base)    # [B, 64, 160, 160]
+        x0 = self.unet_head(base)    # [B, ngf, H, W]
+
+        # ── large scale (relu1_1) 크롭 ────────────────────────────────
+        # use_margin_crop=True : ref 피처를 content 피처 크기에 맞게 center-crop
+        # use_margin_crop=False: 기존 동작 유지 (크롭 없음)
+        if self.use_margin_crop:
+            ref1 = self._center_crop(img_ref_feat['relu1_1'],   x0)
+            swp1 = self._center_crop(pre_relu1_swapped_feat,    x0)
+            off1 = self._center_crop(pre_offset['relu1_1'],     x0)
+            sim1 = self._center_crop(pre_similarity['relu1_1'], x0)
+        else:
+            ref1, swp1 = img_ref_feat['relu1_1'],  pre_relu1_swapped_feat
+            off1, sim1 = pre_offset['relu1_1'],    pre_similarity['relu1_1']
 
         # -------------- Down ------------------
         # large scale
-        down_relu1_offset = torch.cat([x0, pre_relu1_swapped_feat, img_ref_feat['relu1_1']], 1)
+        down_relu1_offset = torch.cat([x0, swp1, ref1], 1)
         down_relu1_offset = self.lrelu(self.down_large_offset_conv1(down_relu1_offset))
         down_relu1_offset = self.lrelu(self.down_large_offset_conv2(down_relu1_offset))
         down_relu1_swapped_feat = self.lrelu(
-            self.down_large_dyn_agg([img_ref_feat['relu1_1'], down_relu1_offset],
-                               pre_offset['relu1_1'], pre_similarity['relu1_1']))
+            self.down_large_dyn_agg([ref1, down_relu1_offset], off1, sim1))
 
         h = torch.cat([x0, down_relu1_swapped_feat], 1)
         h = self.down_head_large(h)
         h = self.down_body_large(h) + x0
-        x1 = self.down_tail_large(h)  # [B, 64, 80, 80]
+        x1 = self.down_tail_large(h)  # [B, ngf, H/2, W/2]
+
+        # ── medium scale (relu2_1) 크롭 ──────────────────────────────
+        if self.use_margin_crop:
+            ref2 = self._center_crop(img_ref_feat['relu2_1'],   x1)
+            swp2 = self._center_crop(pre_relu2_swapped_feat,    x1)
+            off2 = self._center_crop(pre_offset['relu2_1'],     x1)
+            sim2 = self._center_crop(pre_similarity['relu2_1'], x1)
+        else:
+            ref2, swp2 = img_ref_feat['relu2_1'],  pre_relu2_swapped_feat
+            off2, sim2 = pre_offset['relu2_1'],    pre_similarity['relu2_1']
 
         # medium scale
-        down_relu2_offset = torch.cat([x1, pre_relu2_swapped_feat, img_ref_feat['relu2_1']], 1)
+        down_relu2_offset = torch.cat([x1, swp2, ref2], 1)
         down_relu2_offset = self.lrelu(self.down_medium_offset_conv1(down_relu2_offset))
         down_relu2_offset = self.lrelu(self.down_medium_offset_conv2(down_relu2_offset))
         down_relu2_swapped_feat = self.lrelu(
-            self.down_medium_dyn_agg([img_ref_feat['relu2_1'], down_relu2_offset],
-                                pre_offset['relu2_1'], pre_similarity['relu2_1']))
+            self.down_medium_dyn_agg([ref2, down_relu2_offset], off2, sim2))
 
         h = torch.cat([x1, down_relu2_swapped_feat], 1)
         h = self.down_head_medium(h)
         h = self.down_body_medium(h) + x1
-        x2 = self.down_tail_medium(h)    # [9, 128, 40, 40]
+        x2 = self.down_tail_medium(h)    # [B, ngf, H/4, W/4]
+
+        # ── small scale (relu3_1) 크롭 ───────────────────────────────
+        if self.use_margin_crop:
+            ref3 = self._center_crop(img_ref_feat['relu3_1'],   x2)
+            swp3 = self._center_crop(pre_relu3_swapped_feat,    x2)
+            off3 = self._center_crop(pre_offset['relu3_1'],     x2)
+            sim3 = self._center_crop(pre_similarity['relu3_1'], x2)
+        else:
+            ref3, swp3 = img_ref_feat['relu3_1'],  pre_relu3_swapped_feat
+            off3, sim3 = pre_offset['relu3_1'],    pre_similarity['relu3_1']
 
         # -------------- Up ------------------
-
         # dynamic aggregation for relu3_1 reference feature
-        relu3_offset = torch.cat([x2, pre_relu3_swapped_feat, img_ref_feat['relu3_1']], 1)
+        relu3_offset = torch.cat([x2, swp3, ref3], 1)
         relu3_offset = self.lrelu(self.up_small_offset_conv1(relu3_offset))
         relu3_offset = self.lrelu(self.up_small_offset_conv2(relu3_offset))
         relu3_swapped_feat = self.lrelu(
-            self.up_small_dyn_agg([img_ref_feat['relu3_1'], relu3_offset], pre_offset['relu3_1'], pre_similarity['relu3_1']))
+            self.up_small_dyn_agg([ref3, relu3_offset], off3, sim3))
 
         # small scale
         h = torch.cat([x2, relu3_swapped_feat], 1)
         h = self.up_head_small(h)
         h = self.up_body_small(h) + x2
-        x = self.up_tail_small(h)    # [9, 64, 80, 80]
+        x = self.up_tail_small(h)    # [B, ngf, H/2, W/2]
 
         # dynamic aggregation for relu2_1 reference feature
-        relu2_offset = torch.cat([x, pre_relu2_swapped_feat, img_ref_feat['relu2_1']], 1)
+        # ref2/swp2/off2/sim2 는 down path 에서 이미 x1 크기로 크롭됨 — 재사용
+        relu2_offset = torch.cat([x, swp2, ref2], 1)
         relu2_offset = self.lrelu(self.up_medium_offset_conv1(relu2_offset))
         relu2_offset = self.lrelu(self.up_medium_offset_conv2(relu2_offset))
         relu2_swapped_feat = self.lrelu(
-            self.up_medium_dyn_agg([img_ref_feat['relu2_1'], relu2_offset],
-                                pre_offset['relu2_1'], pre_similarity['relu2_1']))
+            self.up_medium_dyn_agg([ref2, relu2_offset], off2, sim2))
+
         # medium scale
         h = torch.cat([x+x1, relu2_swapped_feat], 1)
         h = self.up_head_medium(h)
         h = self.up_body_medium(h) + x
-        x = self.up_tail_medium(h)   # [9, 64, 160, 160]
+        x = self.up_tail_medium(h)   # [B, ngf, H, W]
 
         # dynamic aggregation for relu1_1 reference feature
-        relu1_offset = torch.cat([x, pre_relu1_swapped_feat, img_ref_feat['relu1_1']], 1)
+        # ref1/swp1/off1/sim1 는 down path 에서 이미 x0 크기로 크롭됨 — 재사용
+        relu1_offset = torch.cat([x, swp1, ref1], 1)
         relu1_offset = self.lrelu(self.up_large_offset_conv1(relu1_offset))
         relu1_offset = self.lrelu(self.up_large_offset_conv2(relu1_offset))
         relu1_swapped_feat = self.lrelu(
-            self.up_large_dyn_agg([img_ref_feat['relu1_1'], relu1_offset],
-                               pre_offset['relu1_1'], pre_similarity['relu1_1']))
+            self.up_large_dyn_agg([ref1, relu1_offset], off1, sim1))
+
         # large scale
         h = torch.cat([x+x0, relu1_swapped_feat], 1)
         h = self.up_head_large(h)

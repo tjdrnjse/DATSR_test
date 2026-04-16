@@ -32,6 +32,7 @@ network_g:
   num_heads: [4, 4]
   window_size: 8
   use_checkpoint: false
+  use_margin_crop: true     # margin tiling 시 ref 피처 center-crop 활성화
 
 network_map:
   type: FlowSimCorrespondenceGenerationArch
