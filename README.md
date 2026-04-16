@@ -46,9 +46,23 @@ Reference-based image super-resolution (RefSR) aims to exploit auxiliary referen
 
 
 ## Requirements
-> - Python 3.8, PyTorch >= 1.7.1
-> - CUDA 10.0 or CUDA 10.1
-> - GCC 5.4.0
+> - Python 3.10
+> - PyTorch 2.1.0 + torchvision 0.16.0
+> - CUDA 11.8 or CUDA 12.1 (CPU-only inference also supported)
+
+### Core Dependencies
+
+| Package | Version | Notes |
+|---------|---------|-------|
+| torch | 2.1.0 | Main framework |
+| torchvision | 0.16.0 | Replaces C++ DCNv2 (`deform_conv2d`) |
+| timm | >= 0.6.12 | Swin Transformer layers |
+| mmcv | >= 2.0.0 | Runner utilities |
+| pyyaml | >= 6.0 | Config parsing |
+| numpy | >= 1.24 | Array ops |
+| pillow | >= 9.0 | Image I/O |
+| opencv-python | >= 4.7 | Image processing |
+| tqdm | >= 4.65 | Progress bars |
 
 ## Quick Testing
 Following commands will download [pretrained models](https://github.com/caojiezhang/DATSR/releases) and [test datasets](https://github.com/caojiezhang/DATSR/releases). 
@@ -57,9 +71,9 @@ Following commands will download [pretrained models](https://github.com/caojiezh
     ```bash
    git clone https://github.com/caojiezhang/DATSR.git
    cd DATSR
-   conda install pytorch=1.7.1 torchvision cudatoolkit=10.1 -c pytorch
-   pip install mmcv==0.4.4
-   pip install -r requirements.txt
+   # PyTorch 2.1.0 (CUDA 11.8)
+   pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cu118
+   pip install timm mmcv pyyaml numpy pillow opencv-python tqdm
    ```
 
 
@@ -96,6 +110,51 @@ PYTHONPATH="./:${PYTHONPATH}" python datsr/train.py -opt "options/train/train_re
 
 # Train the restoration network with all loss
 PYTHONPATH="./:${PYTHONPATH}" python datsr/train.py -opt "options/train/train_restoration_gan.yml"
+```
+
+## Tiling Inference Usage Guide
+
+대용량 이미지(LR과 Ref의 해상도·종횡비가 서로 다른 경우 포함)에 대해 VRAM 한계 없이 추론할 수 있도록 **Max-Scale Square Margin Tiling + Overlap Blending** 파이프라인이 통합되어 있습니다.
+
+### 빠른 시작
+
+```bash
+PYTHONPATH="./:${PYTHONPATH}" python datsr/test.py \
+    -opt options/test/test_datsr_tiling_example.yml
+```
+
+### YAML 타일링 옵션 설명
+
+`options/test/test_datsr_tiling_example.yml` 의 `tiling` 섹션을 수정하여 동작을 제어합니다.
+
+```yaml
+tiling:
+  enable: true               # true: 타일링 추론 활성화 / false: 기존 전체 이미지 추론
+  lr_tile_size: 64           # LR 타일 한 변 크기(픽셀). 작을수록 VRAM 절약, 권장: 64~128
+  lr_overlap_pixels: 16      # 타일 간 겹치는 픽셀 수. Stride = lr_tile_size - lr_overlap_pixels
+  ref_search_margin: 32      # Ref 크롭 시 Base 타일 주변 탐색 마진(픽셀)
+  padding_mode: "reflect"    # 경계 초과 패딩: "reflect" | "replicate" | "constant"
+  blending_method: "gaussian" # 블렌딩 가중치: "gaussian" | "linear"
+  gaussian_sigma: 0.5        # Gaussian 윈도우 sigma 비율 (gaussian 선택 시)
+```
+
+| 옵션 | 설명 |
+|------|------|
+| `lr_tile_size` | LR 기준 정방형 타일 크기. 줄이면 VRAM 사용량 감소 |
+| `lr_overlap_pixels` | 타일 경계 아티팩트를 줄이는 Overlap 폭. 크게 할수록 블렌딩 품질 향상 |
+| `ref_search_margin` | Ref 타일 크기를 Base보다 확장하는 마진. 텍스처 대응 탐색 범위를 넓힘 |
+| `blending_method` | `gaussian`: 중심 가중 부드러운 블렌딩 / `linear`: 선형(Tent) 블렌딩 |
+
+### 기존 방식과의 비교
+
+```bash
+# 기존 전체 이미지 추론 (기본)
+PYTHONPATH="./:${PYTHONPATH}" python datsr/test.py \
+    -opt options/test/test_restoration_mse.yml
+
+# 타일링 추론 (대해상도·VRAM 절약)
+PYTHONPATH="./:${PYTHONPATH}" python datsr/test.py \
+    -opt options/test/test_datsr_tiling_example.yml
 ```
 
 ## Visual Results

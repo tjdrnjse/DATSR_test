@@ -1,0 +1,85 @@
+##############################################################
+# DATSR Tiling Inference Example
+# Max-Scale Square Margin Tiling + Overlap Blending
+#
+# 사용법:
+#   PYTHONPATH="./:${PYTHONPATH}" python datsr/test.py \
+#       -opt options/test/test_datsr_tiling_example.yml
+##############################################################
+
+name: test_datsr_tiling
+suffix: ~
+scale: 4
+model_type: RefRestorationModel
+set_CUDA_VISIBLE_DEVICES: ~
+crop_border: ~
+gpu_ids: [0]   # CPU 전용 실행 시 [] 로 변경
+
+# ──────────────────────────────────────────────────────────────
+# Tiling 설정
+# enable: true 일 때 타일링 기반 추론이 활성화됩니다.
+# ──────────────────────────────────────────────────────────────
+tiling:
+  enable: true
+
+  # LR 타일링
+  lr_tile_size: 64              # LR 타일 한 변 크기 (픽셀). 권장: 64 or 128
+  lr_overlap_pixels: 16         # 타일 간 겹치는 픽셀 수. Stride = lr_tile_size - lr_overlap_pixels
+
+  # Ref 타일링 (Max-Scale Square Margin Tiling)
+  ref_search_margin: 32         # Base Ref 타일에서 상하좌우 확장할 마진 (픽셀)
+  padding_mode: "reflect"       # 경계 초과 시 패딩 방식: "reflect" | "replicate" | "constant"
+
+  # Overlap Blending
+  blending_method: "gaussian"   # 가중치 윈도우 종류: "gaussian" | "linear"
+  gaussian_sigma: 0.5           # Gaussian 윈도우의 sigma 비율 (blending_method=gaussian 시 사용)
+
+# ──────────────────────────────────────────────────────────────
+# 데이터셋
+# ──────────────────────────────────────────────────────────────
+datasets:
+  test_0:
+    name: val_CUFED
+    type: RefCUFEDDataset
+    dataroot_in: data/CUFED/test/CUFED5
+    dataroot_ref: data/CUFED/test/CUFED5
+    io_backend:
+      type: disk
+    bicubic_model: PIL
+    ann_file: ./datasets/CUFED5_pairs.txt
+
+val_func: BasicSRValidation
+save_img: false
+
+# ──────────────────────────────────────────────────────────────
+# 네트워크 구조 (test_restoration_mse.yml 와 동일)
+# ──────────────────────────────────────────────────────────────
+network_g:
+  type: SwinUnetv3RestorationNet
+  ngf: 128
+  n_blocks: 8
+  groups: 8
+  embed_dim: 128
+  depths: [4, 4]
+  num_heads: [4, 4]
+  window_size: 8
+  use_checkpoint: True
+
+network_map:
+  type: FlowSimCorrespondenceGenerationArch
+  patch_size: 3
+  stride: 1
+  vgg_layer_list: ['relu1_1', 'relu2_1', 'relu3_1']
+  vgg_type: 'vgg19'
+
+network_extractor:
+  type: ContrasExtractorSep
+
+# ──────────────────────────────────────────────────────────────
+# 경로 설정
+# ──────────────────────────────────────────────────────────────
+path:
+  pretrain_model_g: experiments/pretrained_model/restoration_mse.pth
+  pretrain_model_feature_extractor: experiments/pretrained_model.pth
+  strict_load: false   # Robust Loader 가 키 불일치를 자동 해소
+  root: experiments/test/

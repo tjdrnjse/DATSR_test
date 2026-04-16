@@ -5,13 +5,15 @@ from collections import OrderedDict
 
 import mmcv
 import torch
+import torch.nn.functional as F
 
 import datsr.models.networks as networks
 import datsr.utils.metrics as metrics
 from datsr.utils import ProgressBar, tensor2img, img2tensor
+from inference.tiling import tile_lr, get_ref_tile
+from inference.blending import reconstruct_hr
 
 from .sr_model import SRModel
-import pdb
 
 loss_module = importlib.import_module('datsr.models.losses')
 logger = logging.getLogger('base')
@@ -284,6 +286,94 @@ class RefRestorationModel(SRModel):
 
         self.net_g.train()
 
+    def test_tiled(self):
+        """
+        Max-Scale Square Margin Tiling + Overlap Blending 기반 추론.
+
+        YAML의 'tiling' 섹션이 활성화(enable: true)되어 있을 때 호출된다.
+        LR을 overlap 타일로 분할하고, 각 타일에 대응하는 Ref 크롭을 잘라낸 뒤
+        DATSR 파이프라인(net_extractor → net_map → net_g)을 개별 실행한다.
+        이후 Gaussian/Linear 가중치 맵으로 SR 타일들을 블렌딩하여 최종 HR을 복원한다.
+
+        Batch size = 1 을 가정한다.
+        """
+        tiling_opt  = self.opt['tiling']
+        tile_size   = int(tiling_opt['lr_tile_size'])
+        overlap     = int(tiling_opt['lr_overlap_pixels'])
+        stride      = tile_size - overlap
+        margin      = int(tiling_opt['ref_search_margin'])
+        pad_mode    = tiling_opt.get('padding_mode') or 'reflect'
+        blend_meth  = tiling_opt.get('blending_method') or 'gaussian'
+        sigma       = float(tiling_opt.get('gaussian_sigma') or 0.5)
+        scale       = self.opt['scale']  # 4
+
+        # (C, H, W) — batch dim 제거
+        lr         = self.img_in_lq[0].cpu()
+        ref        = self.img_ref[0].cpu()
+        match_full = self.match_img_in[0].cpu()   # (C, H*scale, W*scale)
+
+        # ── 1. LR 타일링 ──────────────────────────────────────
+        lr_tiles, positions, original_shape = tile_lr(
+            lr, tile_size, stride, pad_mode
+        )
+
+        sr_tiles = []
+        self.net_g.eval()
+        self.net_extractor.eval()
+        self.net_map.eval()
+
+        with torch.no_grad():
+            for lr_tile, (r, c) in zip(lr_tiles, positions):
+
+                # ── 2. Ref 타일 크롭 (Max-Scale Margin Tiling) ──
+                ref_tile = get_ref_tile(
+                    ref, original_shape, r, c, tile_size, margin, pad_mode
+                )  # (C, final_size, final_size)
+
+                # ── 3. match_img_in 타일 크롭 (HR 스케일) ────────
+                r_hr = r * scale
+                c_hr = c * scale
+                ms   = tile_size * scale          # match tile size at HR scale
+                _, Mh, Mw = match_full.shape
+                pb = max(0, r_hr + ms - Mh)
+                pr = max(0, c_hr + ms - Mw)
+                mwork = (
+                    F.pad(match_full.unsqueeze(0), (0, pr, 0, pb), mode=pad_mode).squeeze(0)
+                    if pb > 0 or pr > 0 else match_full
+                )
+                match_tile = mwork[:, r_hr:r_hr + ms, c_hr:c_hr + ms]
+
+                # ref_tile 크기에 맞춰 match_tile 을 리사이즈
+                # → net_extractor(ContrasExtractorSep) 의 두 입력이 동일 공간 스케일을 공유
+                _, rh, rw = ref_tile.shape
+                if match_tile.shape[1] != rh or match_tile.shape[2] != rw:
+                    match_tile = F.interpolate(
+                        match_tile.unsqueeze(0).float(),
+                        size=(rh, rw),
+                        mode='bilinear',
+                        align_corners=False,
+                    ).squeeze(0)
+
+                # ── 4. 디바이스로 이동 + 배치 차원 추가 ─────────
+                lr_b    = lr_tile.unsqueeze(0).to(self.device)
+                ref_b   = ref_tile.unsqueeze(0).to(self.device)
+                match_b = match_tile.unsqueeze(0).to(self.device)
+
+                # ── 5. DATSR 파이프라인 실행 ──────────────────────
+                features              = self.net_extractor(match_b, ref_b)
+                pre_offset, ref_feat  = self.net_map(features, ref_b)
+                sr_tile               = self.net_g(lr_b, pre_offset, ref_feat)
+
+                sr_tiles.append(sr_tile[0].cpu())
+
+        self.net_g.train()
+
+        # ── 6. Overlap Blending → self.output ─────────────────
+        hr = reconstruct_hr(
+            sr_tiles, positions, original_shape, scale, blend_meth, sigma
+        )
+        self.output = hr.unsqueeze(0).to(self.device)
+
     def get_current_visuals(self):
         out_dict = OrderedDict()
         out_dict['img_in_lq'] = self.img_in_lq.detach().cpu()
@@ -311,7 +401,11 @@ class RefRestorationModel(SRModel):
             img_name = osp.splitext(osp.basename(val_data['lq_path'][0]))[0]
 
             self.feed_data(val_data)
-            self.test()
+            tiling_cfg = self.opt.get('tiling')
+            if tiling_cfg and tiling_cfg.get('enable'):
+                self.test_tiled()
+            else:
+                self.test()
 
             visuals = self.get_current_visuals()
             sr_img, gt_img = tensor2img([visuals['rlt'], visuals['gt']])

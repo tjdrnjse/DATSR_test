@@ -18,7 +18,9 @@
       "Bash(\"C:/Users/Home/Documents/work_samsung/HAT/hat_venv/Scripts/python.exe\" cleanup.py --dry-run)",
       "Bash(python -)",
       "Bash(\"C:/Users/Home/Documents/work_samsung/HAT/hat_venv/Scripts/python.exe\" test_robust_load.py)",
-      "Bash(ls C:/Users/Home/Documents/work_samsung/DATSR/*.py)"
+      "Bash(ls C:/Users/Home/Documents/work_samsung/DATSR/*.py)",
+      "Bash(\"C:/Users/Home/Documents/work_samsung/HAT/hat_venv/Scripts/python.exe\" test_tiling_flow.py)",
+      "Bash(python -c \"import os; os.remove\\('test_tiling_flow.py'\\); print\\('Deleted: test_tiling_flow.py'\\)\")"
     ]
   }
 }
