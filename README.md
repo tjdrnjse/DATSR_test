@@ -112,50 +112,82 @@ PYTHONPATH="./:${PYTHONPATH}" python datsr/train.py -opt "options/train/train_re
 PYTHONPATH="./:${PYTHONPATH}" python datsr/train.py -opt "options/train/train_restoration_gan.yml"
 ```
 
-## Tiling Inference Usage Guide
+## Pipeline Overview
 
-대용량 이미지(LR과 Ref의 해상도·종횡비가 서로 다른 경우 포함)에 대해 VRAM 한계 없이 추론할 수 있도록 **Max-Scale Square Margin Tiling + Overlap Blending** 파이프라인이 통합되어 있습니다.
+This repository provides three fully independent pipelines:
 
-### 빠른 시작
+| Pipeline | Script | Purpose | GT Required |
+|----------|--------|---------|-------------|
+| **Train** | `datsr/train.py` | Train restoration network | Yes |
+| **Test** | `datsr/test.py` | Benchmark evaluation (PSNR/SSIM/LPIPS) | Yes |
+| **Inference** | `inference.py` | In-the-wild SR, no ground-truth needed | No |
 
-```bash
-PYTHONPATH="./:${PYTHONPATH}" python datsr/test.py \
-    -opt options/test/test_datsr_tiling_example.yml
+`test.py` and `inference.py` are completely separate — tiling logic lives only in `inference.py`.
+
+---
+
+## Standalone Inference (No GT Required)
+
+For real-world / in-the-wild images where you only have LR and Ref pairs (no HR ground-truth), use the standalone inference pipeline.
+
+### Input Data Layout
+
+```
+data/inference/
+  LR/
+    0001.png
+    0002.png
+    ...
+  Ref/
+    0001.png   <-- must share the exact same filename as the LR counterpart
+    0002.png
+    ...
 ```
 
-### YAML 타일링 옵션 설명
+**Name-Matching Rule:** The pipeline pairs LR and Ref images by filename stem (extension-agnostic). If a LR file has no Ref with the same stem, it is skipped with a warning.
 
-`options/test/test_datsr_tiling_example.yml` 의 `tiling` 섹션을 수정하여 동작을 제어합니다.
+### Quick Start
+
+```bash
+python inference.py -opt options/inference/inference_datsr_tiling.yml
+```
+
+Results are saved to the path specified by `output_dir` in the YAML (default: `results/inference/SR/`).
+
+### YAML Configuration
+
+Edit `options/inference/inference_datsr_tiling.yml`:
 
 ```yaml
+# Input / Output paths
+dataroot_lr:  data/inference/LR
+dataroot_ref: data/inference/Ref
+output_dir:   results/inference/SR
+
+# Pretrained weights
+pretrain_model_g:          experiments/pretrained_model/restoration_mse.pth
+pretrain_model_extractor:  experiments/pretrained_model.pth
+
+# Tiling settings
 tiling:
-  enable: true               # true: 타일링 추론 활성화 / false: 기존 전체 이미지 추론
-  lr_tile_size: 64           # LR 타일 한 변 크기(픽셀). 작을수록 VRAM 절약, 권장: 64~128
-  lr_overlap_pixels: 16      # 타일 간 겹치는 픽셀 수. Stride = lr_tile_size - lr_overlap_pixels
-  ref_search_margin: 32      # Ref 크롭 시 Base 타일 주변 탐색 마진(픽셀)
-  padding_mode: "reflect"    # 경계 초과 패딩: "reflect" | "replicate" | "constant"
-  blending_method: "gaussian" # 블렌딩 가중치: "gaussian" | "linear"
-  gaussian_sigma: 0.5        # Gaussian 윈도우 sigma 비율 (gaussian 선택 시)
+  lr_tile_size: 64          # LR tile side length (px). Smaller = less VRAM. Recommended: 64-128
+  lr_overlap_pixels: 16     # Overlap between tiles. Stride = lr_tile_size - lr_overlap_pixels
+  ref_search_margin: 64     # Extra margin (px) added around each Ref crop
+  padding_mode: "reflect"   # Boundary padding: "reflect" | "replicate" | "constant"
+  blending_method: "gaussian"  # Blend weights: "gaussian" | "linear"
+  gaussian_sigma: 0.5       # Gaussian window sigma as fraction of half-width
+
+# Runtime
+gpu_ids: [0]   # Use [] for CPU-only
+fp16: false    # Half-precision inference (GPU only)
 ```
 
-| 옵션 | 설명 |
-|------|------|
-| `lr_tile_size` | LR 기준 정방형 타일 크기. 줄이면 VRAM 사용량 감소 |
-| `lr_overlap_pixels` | 타일 경계 아티팩트를 줄이는 Overlap 폭. 크게 할수록 블렌딩 품질 향상 |
-| `ref_search_margin` | Ref 타일 크기를 Base보다 확장하는 마진. 텍스처 대응 탐색 범위를 넓힘 |
-| `blending_method` | `gaussian`: 중심 가중 부드러운 블렌딩 / `linear`: 선형(Tent) 블렌딩 |
-
-### 기존 방식과의 비교
-
-```bash
-# 기존 전체 이미지 추론 (기본)
-PYTHONPATH="./:${PYTHONPATH}" python datsr/test.py \
-    -opt options/test/test_restoration_mse.yml
-
-# 타일링 추론 (대해상도·VRAM 절약)
-PYTHONPATH="./:${PYTHONPATH}" python datsr/test.py \
-    -opt options/test/test_datsr_tiling_example.yml
-```
+| Option | Description |
+|--------|-------------|
+| `lr_tile_size` | Square tile size in LR space. Reduce to save VRAM. |
+| `lr_overlap_pixels` | Wider overlap reduces seam artifacts at tile boundaries. |
+| `ref_search_margin` | Larger margin gives the correspondence module more search area. |
+| `blending_method` | `gaussian`: center-weighted smooth blend. `linear`: tent/triangular blend. |
 
 ## Visual Results
 
