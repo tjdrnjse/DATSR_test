@@ -14,54 +14,9 @@ GT(정답) 이미지 없이 실제 LR + Ref 쌍만으로 SR 추론을 수행한�
     python inference.py -opt options/inference/inference_datsr_tiling.yml
 """
 
-# ── Compatibility Patch: MMCV 2.x + torchvision 0.16+ ───────────────────────
-# 반드시 다른 모든 import 보다 먼저 실행되어야 합니다.
-import os as _os, sys as _sys, types as _types
-
-# Fix 1: mmcv.scandir — MMCV 2.x 에서 최상위 네임스페이스에서 제거됨
-#   datsr/{models,models/archs}/__init__.py 가 모듈 로드 시점에 즉시
-#   mmcv.scandir 을 호출하므로, datsr 패키지 import 전에 패치 완료 필요.
-import mmcv as _mmcv
-if not hasattr(_mmcv, 'scandir'):
-    def _mmcv_scandir(dir_path, suffix=None, recursive=False,
-                      case_sensitive=True):
-        """MMCV 1.x mmcv.scandir 드롭인 대체 구현."""
-        if isinstance(suffix, str):
-            suffix = (suffix,)
-        for _root, _dirs, _files in _os.walk(str(dir_path)):
-            _dirs[:] = sorted(d for d in _dirs if not d.startswith('.'))
-            for _fname in sorted(_files):
-                if _fname.startswith('.'):
-                    continue
-                _rel = _os.path.relpath(
-                    _os.path.join(_root, _fname), str(dir_path))
-                if suffix is None:
-                    yield _rel
-                else:
-                    _chk = _rel if case_sensitive else _rel.lower()
-                    _suf = (suffix if case_sensitive
-                            else tuple(s.lower() for s in suffix))
-                    if _chk.endswith(_suf):
-                        yield _rel
-            if not recursive:
-                break
-    _mmcv.scandir = _mmcv_scandir
-
-# Fix 2: torchvision 0.16+ 에서 functional_tensor 서브모듈 자체가 제거됨.
-#   해당 모듈을 import 하는 코드를 위해 rgb_to_grayscale 을 포함한
-#   스텁 모듈을 sys.modules 에 선제적으로 주입.
-_ft_name = 'torchvision.transforms.functional_tensor'
-try:
-    import torchvision.transforms.functional_tensor as _ft
-    if not hasattr(_ft, 'rgb_to_grayscale'):
-        import torchvision.transforms.functional as _tvf
-        _ft.rgb_to_grayscale = _tvf.rgb_to_grayscale
-except ImportError:
-    import torchvision.transforms.functional as _tvf
-    _stub = _types.ModuleType(_ft_name)
-    _stub.rgb_to_grayscale = _tvf.rgb_to_grayscale
-    _sys.modules[_ft_name] = _stub
-# ─────────────────────────────────────────────────────────────────────────────
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import compat  # noqa: F401 — MMCV 2.x / torchvision 0.16+ 호환 패치 (반드시 최상단)
 
 import argparse
 import logging
