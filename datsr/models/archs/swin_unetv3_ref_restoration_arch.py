@@ -944,29 +944,37 @@ class DynamicAggregationRestoration(nn.Module):
     def _center_crop(src: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Margin Tiling 보정: src 를 target 의 공간 해상도에 맞게 center-crop 한다.
 
-        relu1_1 에서 사용한 margin 을 m 이라 할 때 각 레벨의 crop 크기는:
-          relu1_1 (stride 1): margin = m
-          relu2_1 (stride 2): margin = m // 2
-          relu3_1 (stride 4): margin = m // 4
-        이를 하드코딩하지 않고 실제 텐서 크기 차이로 자동 계산한다.
-
-        4D (B,C,H,W) 와 5D (B,K,H,W,2 — pre_offset 형식) 모두 지원.
-        마지막 두 축(-2, -1)이 공간 축이라 가정한다.
+        지원 형식:
+          4D (B, C, H, W)       — 공간 축: [-2, -1]
+          5D (B, N, H, W, 2)    — pre_offset 형식, 공간 축: [-3, -2]
+                                   마지막 축(2)은 좌표 차원이므로 크롭하지 않음
 
         Args:
-            src    : (..., Hs, Ws) — 마진이 포함된 텐서
-            target : (..., Ht, Wt) — 크기 기준이 되는 Content 피처 텐서
+            src    : 마진이 포함된 텐서 (4D 또는 5D)
+            target : 크기 기준이 되는 Content 피처 텐서 (항상 4D)
 
         Returns:
-            (..., Ht, Wt) center-cropped 텐서
+            공간 해상도가 target 과 일치하도록 center-crop 된 텐서
         """
-        th, tw = target.shape[-2], target.shape[-1]
-        sh, sw = src.shape[-2], src.shape[-1]
-        if sh == th and sw == tw:
-            return src
-        dh = (sh - th) // 2
-        dw = (sw - tw) // 2
-        return src[..., dh:dh + th, dw:dw + tw]
+        th = target.shape[-2]
+        tw = target.shape[-1]
+
+        if src.dim() == 5:
+            # pre_offset: [B, N, H, W, 2] — 공간 축은 dim[-3], dim[-2]
+            sh, sw = src.shape[-3], src.shape[-2]
+            if sh == th and sw == tw:
+                return src
+            dh = (sh - th) // 2
+            dw = (sw - tw) // 2
+            return src[:, :, dh:dh + th, dw:dw + tw, :]
+        else:
+            # 4D: [B, C, H, W] — 공간 축은 dim[-2], dim[-1]
+            sh, sw = src.shape[-2], src.shape[-1]
+            if sh == th and sw == tw:
+                return src
+            dh = (sh - th) // 2
+            dw = (sw - tw) // 2
+            return src[..., dh:dh + th, dw:dw + tw]
 
     def flow_warp(self,
                   x,
