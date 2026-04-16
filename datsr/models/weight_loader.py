@@ -37,11 +37,10 @@ _KEY_RULES = [
         r".conv_offset_mask.\1",
         "conv_offset -> conv_offset_mask  (구형 DCN: mask 없음)",
     ),
-    (
-        re.compile(r"\.conv\.(weight|bias)$"),
-        r".\1",
-        ".conv.weight/.conv.bias -> .weight/.bias  (nn.Conv2d 래핑 제거)",
-    ),
+    # NOTE: .conv.(weight|bias) → .(weight|bias) 규칙은 제거됨.
+    # 체크포인트의 DCN 레이어는 이미 .weight/.bias 직접 저장이며,
+    # 해당 규칙이 합법적인 nn.Conv2d 자식 레이어(예: layers.N.conv.weight)를
+    # 잘못 변환하여 missing/unexpected 경고를 유발함.
 ]
 
 
