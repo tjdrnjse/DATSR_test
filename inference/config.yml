@@ -1,0 +1,12 @@
+inference:
+  # ── LR 타일링 설정 ─────────────────────────────────────────────
+  lr_tile_size: 128
+  lr_overlap_pixels: 32        # Stride = 128 - 32 = 96 (내부 자동 계산)
+
+  # ── Ref 타일링 설정 ────────────────────────────────────────────
+  ref_search_margin: 64        # Base 타일에서 상하좌우 확장할 마진 픽셀 수
+  padding_mode: "reflect"      # "reflect" | "replicate" | "constant"
+
+  # ── 블렌딩 설정 ────────────────────────────────────────────────
+  blending_method: "gaussian"  # "gaussian" | "linear"
+  gaussian_sigma: 0.5          # gaussian 선택 시 sigma 비율 (0 < sigma ≤ 1)

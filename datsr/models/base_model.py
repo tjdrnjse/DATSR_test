@@ -7,7 +7,7 @@ from mmcv.runner import master_only
 from torch.nn.parallel import DataParallel, DistributedDataParallel
 
 import datsr.models.lr_scheduler as lr_scheduler
-import pdb
+from datsr.models.weight_loader import load_robust_state_dict
 
 logger = logging.getLogger('base')
 
@@ -246,36 +246,36 @@ class BaseModel():
     def load_network(self, net, load_path, strict=True):
         """Load network.
 
+        Uses load_robust_state_dict for automatic DCN key remapping
+        (conv_offset -> conv_offset_mask, module. prefix stripping, etc.).
+        Falls back to strict=False with detailed missing/unexpected key logging.
+
         Args:
             load_path (str): The path of networks to be loaded.
             net (nn.Module): Network.
             strict (bool): Whether strictly loaded.
         """
-        if isinstance(net, nn.DataParallel) or isinstance(
-                net, DistributedDataParallel):
-            net = net.module
-
-        net_cls_name = net.__class__.__name__
+        net_cls_name = (
+            net.module.__class__.__name__
+            if isinstance(net, (nn.DataParallel, DistributedDataParallel))
+            else net.__class__.__name__
+        )
         logger.info(f'Loading {net_cls_name} model from {load_path}.')
-        load_net = torch.load(load_path)
 
-        # remove unnecessary 'module.'
-        if 'level3flow' in self.opt['name'] or 'noVGG' in self.opt['name']:
-            for k, v in list(load_net.items()):  # cjz
-                if k.startswith('module.'):
-                    load_net[k[7:]] = v
-                    load_net.pop(k)
-                if 'model' in k:
-                    k1 = k.replace('model.', '')
-                    load_net[k1] = v
-                    load_net.pop(k)
-        else:
-            for k, v in load_net.items():  # cjz
-                if k.startswith('module.'):
-                    load_net[k[7:]] = v
-                    load_net.pop(k)
-        self._print_different_keys_loading(net, load_net, strict)
-        net.load_state_dict(load_net, strict=strict)
+        report = load_robust_state_dict(
+            model=net,
+            checkpoint_path=load_path,
+            key_remapping=True,
+            strip_module_prefix=True,
+        )
+
+        if strict and (report['missing_keys'] or report['unexpected_keys']):
+            raise RuntimeError(
+                f"strict=True but key mismatch detected. "
+                f"missing={len(report['missing_keys'])}, "
+                f"unexpected={len(report['unexpected_keys'])}. "
+                f"Set strict_load=false in the config to suppress."
+            )
 
     @master_only
     def save_training_state(self, epoch, current_iter):

@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python test_pipeline.py)",
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(where python:*)",
+      "Bash(conda activate:*)",
+      "Bash(python -c \"import torch; print\\(torch.__version__\\)\")",
+      "Bash(conda run:*)",
+      "Read(//c/Users/Home/anaconda3/**)",
+      "Read(//c/Users/Home/miniconda3/**)",
+      "Read(//c/ProgramData/Anaconda3/**)",
+      "Read(//c/Users/Home/AppData/Local/Python/bin/**)",
+      "Bash(C:/Users/Home/AppData/Local/Python/bin/python.exe:*)",
+      "Bash(\"C:/Users/Home/AppData/Local/Programs/Python/Python311/python.exe\" -c \"import torch; print\\(torch.__version__\\)\")",
+      "Bash(C:/Users/Home/Documents/work_samsung/HAT/hat_venv/Scripts/python.exe:*)",
+      "Bash(\"C:/Users/Home/Documents/work_samsung/HAT/hat_venv/Scripts/python.exe\" test_pipeline.py)",
+      "Bash(\"C:/Users/Home/Documents/work_samsung/HAT/hat_venv/Scripts/python.exe\" cleanup.py --dry-run)",
+      "Bash(python -)",
+      "Bash(\"C:/Users/Home/Documents/work_samsung/HAT/hat_venv/Scripts/python.exe\" test_robust_load.py)",
+      "Bash(ls C:/Users/Home/Documents/work_samsung/DATSR/*.py)"
+    ]
+  }
+}

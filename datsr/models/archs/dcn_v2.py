@@ -3,15 +3,10 @@
 import logging
 import math
 
-#import _ext as _backend
 import torch
 from torch import nn
-from torch.autograd import Function
-from torch.autograd.function import once_differentiable
 from torch.nn.modules.utils import _pair
-import pdb
-import torch.utils.checkpoint as checkpoint
-from mmcv.ops import ModulatedDeformConv2d, modulated_deform_conv2d
+from torchvision.ops import deform_conv2d as tv_deform_conv2d
 
 
 logger = logging.getLogger('base')
@@ -94,9 +89,8 @@ class DCNv2(nn.Module):
             0] * self.kernel_size[1] == offset.shape[1]
         assert self.deformable_groups * self.kernel_size[0] * self.kernel_size[
             1] == mask.shape[1]
-        return modulated_deform_conv2d(input, offset, mask, self.weight, self.bias,
-                           self.stride, self.padding, self.dilation, 1,
-                           self.deformable_groups)
+        return tv_deform_conv2d(input, offset, self.weight, self.bias,
+                           self.stride, self.padding, self.dilation, mask)
 
 
 class DCN(DCNv2):
@@ -132,9 +126,8 @@ class DCN(DCNv2):
         o1, o2, mask = torch.chunk(out, 3, dim=1)
         offset = torch.cat((o1, o2), dim=1)
         mask = torch.sigmoid(mask)
-        return modulated_deform_conv2d(input, offset, mask, self.weight, self.bias,
-                           self.stride, self.padding, self.dilation, 1,
-                           self.deformable_groups)
+        return tv_deform_conv2d(input, offset, self.weight, self.bias,
+                           self.stride, self.padding, self.dilation, mask)
 
 
 class DCN_sep(DCNv2):
@@ -183,9 +176,8 @@ class DCN_sep(DCNv2):
         if offset_mean > 100:
             logger.warning(
                 'Offset mean is {}, larger than 100.'.format(offset_mean))
-        return modulated_deform_conv2d(x, offset, mask, self.weight, self.bias,
-                           self.stride, self.padding, self.dilation, 1,
-                           self.deformable_groups)
+        return tv_deform_conv2d(x, offset, self.weight, self.bias,
+                           self.stride, self.padding, self.dilation, mask)
 
 
 class DCN_sep_pre_multi_offset(DCNv2):
@@ -255,9 +247,8 @@ class DCN_sep_pre_multi_offset(DCNv2):
             logger.warning(
                 'Offset mean is {}, larger than 100.'.format(offset_mean))
 
-        return modulated_deform_conv2d(x, offset, mask, self.weight, self.bias,
-                           self.stride, self.padding, self.dilation, 1,
-                           self.deformable_groups)
+        return tv_deform_conv2d(x, offset, self.weight, self.bias,
+                           self.stride, self.padding, self.dilation, mask)
 
 # TODO cpu version
 class DCN_sep_pre_multi_offset_cpu(DCNv2):
@@ -325,9 +316,9 @@ class DCN_sep_pre_multi_offset_cpu(DCNv2):
         if offset_mean > 100:
             logger.warning(
                 'Offset mean is {}, larger than 100.'.format(offset_mean))
-        return modulated_deform_conv2d(x, offset, mask, self.weight, self.bias,
-                                       self.stride, self.padding,
-                                       self.dilation, 1, self.deformable_groups)
+        return tv_deform_conv2d(x, offset, self.weight, self.bias,
+                                self.stride, self.padding,
+                                self.dilation, mask)
 
 
 class DCN_sep_pre_multi_offset_v2(DCNv2):
@@ -395,9 +386,8 @@ class DCN_sep_pre_multi_offset_v2(DCNv2):
         if offset_mean > 100:
             logger.warning(
                 'Offset mean is {}, larger than 100.'.format(offset_mean))
-        return offset, modulated_deform_conv2d(x, offset, mask, self.weight, self.bias,
-                           self.stride, self.padding, self.dilation, 1,
-                           self.deformable_groups)
+        return offset, tv_deform_conv2d(x, offset, self.weight, self.bias,
+                           self.stride, self.padding, self.dilation, mask)
 
 
 class DCN_sep_pre_multi_offset_v2_1(DCNv2):
@@ -460,9 +450,8 @@ class DCN_sep_pre_multi_offset_v2_1(DCNv2):
         if offset_mean > 100:
             logger.warning(
                 'Offset mean is {}, larger than 100.'.format(offset_mean))
-        return modulated_deform_conv2d(x, offset, mask, self.weight, self.bias,
-                           self.stride, self.padding, self.dilation, 1,
-                           self.deformable_groups)
+        return tv_deform_conv2d(x, offset, self.weight, self.bias,
+                           self.stride, self.padding, self.dilation, mask)
 
 class DCN_sep_pre_multi_offset_flow_similarity(DCNv2):
     '''
@@ -543,9 +532,8 @@ class DCN_sep_pre_multi_offset_flow_similarity(DCNv2):
         if offset_mean > 100:
             logger.warning(
                 'Offset mean is {}, larger than 100.'.format(offset_mean))
-        return modulated_deform_conv2d(x, offset, mask, self.weight, self.bias,
-                           self.stride, self.padding, self.dilation, 1,
-                           self.deformable_groups)
+        return tv_deform_conv2d(x, offset, self.weight, self.bias,
+                           self.stride, self.padding, self.dilation, mask)
 
 
 class DCN_sep_pre_multi_offset_flow_similarity_v2(DCNv2):
@@ -627,9 +615,8 @@ class DCN_sep_pre_multi_offset_flow_similarity_v2(DCNv2):
         if offset_mean > 100:
             logger.warning(
                 'Offset mean is {}, larger than 100.'.format(offset_mean))
-        return offset, modulated_deform_conv2d(x, offset, mask, self.weight, self.bias,
-                           self.stride, self.padding, self.dilation, 1,
-                           self.deformable_groups)
+        return offset, tv_deform_conv2d(x, offset, self.weight, self.bias,
+                           self.stride, self.padding, self.dilation, mask)
 
 
 class DCN_sep_pre_multi_offset_flow_similarity_v2_1(DCNv2):
@@ -704,9 +691,8 @@ class DCN_sep_pre_multi_offset_flow_similarity_v2_1(DCNv2):
         if offset_mean > 100:
             logger.warning(
                 'Offset mean is {}, larger than 100.'.format(offset_mean))
-        return modulated_deform_conv2d(x, offset, mask, self.weight, self.bias,
-                           self.stride, self.padding, self.dilation, 1,
-                           self.deformable_groups)
+        return tv_deform_conv2d(x, offset, self.weight, self.bias,
+                           self.stride, self.padding, self.dilation, mask)
 
 
 class DCN_sep_pre_multi_offset_flow_similarity_cpu(DCNv2):
@@ -789,9 +775,9 @@ class DCN_sep_pre_multi_offset_flow_similarity_cpu(DCNv2):
             logger.warning(
                 'Offset mean is {}, larger than 100.'.format(offset_mean))
 
-        return modulated_deform_conv2d(x, offset, mask, self.weight, self.bias,
-                                       self.stride, self.padding,
-                                       self.dilation, 1, self.deformable_groups)
+        return tv_deform_conv2d(x, offset, self.weight, self.bias,
+                                self.stride, self.padding,
+                                self.dilation, mask)
 
 class DCN_sep_pre_multi_offset_withTanh(DCNv2):
     '''
@@ -863,9 +849,8 @@ class DCN_sep_pre_multi_offset_withTanh(DCNv2):
         if offset_mean > 100:
             logger.warning(
                 'Offset mean is {}, larger than 100.'.format(offset_mean))
-        return modulated_deform_conv2d(x, offset, mask, self.weight, self.bias,
-                           self.stride, self.padding, self.dilation, 1,
-                           self.deformable_groups)
+        return tv_deform_conv2d(x, offset, self.weight, self.bias,
+                           self.stride, self.padding, self.dilation, mask)
 
 """
 class _DCNv2Pooling(Function):
