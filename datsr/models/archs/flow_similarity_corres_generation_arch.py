@@ -17,14 +17,17 @@ class FlowSimCorrespondenceGenerationArch(nn.Module):
                  patch_size=3,
                  stride=1,
                  vgg_layer_list=['relu3_1', 'relu2_1', 'relu1_1'],
-                 vgg_type='vgg19'):
+                 vgg_type='vgg19',
+                 vgg_pretrained_path=None):
         super(FlowSimCorrespondenceGenerationArch, self).__init__()
         self.patch_size = patch_size
         self.stride = stride
 
         self.vgg_layer_list = vgg_layer_list
         self.vgg = VGGFeatureExtractor(
-            layer_name_list=vgg_layer_list, vgg_type=vgg_type)
+            layer_name_list=vgg_layer_list,
+            vgg_type=vgg_type,
+            pretrained_path=vgg_pretrained_path)
 
     def index_to_flow(self, max_idx):
         device = max_idx.device

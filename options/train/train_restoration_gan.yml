@@ -61,6 +61,7 @@ network_map:
   stride: 1
   vgg_layer_list: ['relu1_1', 'relu2_1', 'relu3_1']
   vgg_type: 'vgg19'
+  vgg_pretrained_path: ~  # 로컬 경로 지정 시 자동 다운로드 대신 사용. 예: experiments/pretrained_model/vgg19.pth
 network_extractor:
   type: ContrasExtractorSep
 

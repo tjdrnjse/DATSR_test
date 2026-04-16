@@ -1,8 +1,12 @@
+import logging
 from collections import OrderedDict
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torchvision.models.vgg as vgg
+
+logger = logging.getLogger('base')
 
 NAMES = {
     'vgg11': [
@@ -83,7 +87,8 @@ class VGGFeatureExtractor(nn.Module):
                  use_input_norm=True,
                  requires_grad=False,
                  remove_pooling=False,
-                 pooling_stride=2):
+                 pooling_stride=2,
+                 pretrained_path=None):
         super(VGGFeatureExtractor, self).__init__()
 
         self.layer_name_list = layer_name_list
@@ -100,8 +105,27 @@ class VGGFeatureExtractor(nn.Module):
             idx = self.names.index(v)
             if idx > max_idx:
                 max_idx = idx
-        features = getattr(vgg,
-                           vgg_type)(pretrained=True).features[:max_idx + 1]
+
+        if pretrained_path is not None:
+            # Load weights from a local file instead of auto-downloading
+            pretrained_path = str(pretrained_path)
+            if not Path(pretrained_path).exists():
+                raise FileNotFoundError(
+                    f'VGG pretrained weights not found: {pretrained_path}')
+            net = getattr(vgg, vgg_type)(pretrained=False)
+            state_dict = torch.load(
+                pretrained_path, map_location='cpu', weights_only=False)
+            # Support nested checkpoints ({state_dict: ...} etc.)
+            for key in ('state_dict', 'params', 'model'):
+                if key in state_dict:
+                    state_dict = state_dict[key]
+                    break
+            net.load_state_dict(state_dict, strict=False)
+            logger.info(f'[VGGFeatureExtractor] Loaded weights from {pretrained_path}')
+            features = net.features[:max_idx + 1]
+        else:
+            features = getattr(vgg,
+                               vgg_type)(pretrained=True).features[:max_idx + 1]
 
         modified_net = OrderedDict()
         for k, v in zip(self.names, features):
