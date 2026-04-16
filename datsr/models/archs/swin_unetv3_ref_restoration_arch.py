@@ -772,7 +772,7 @@ class SwinBlock(nn.Module):
 
 
 class SwinUnetv3RestorationNet(nn.Module):
-    def __init__(self, ngf=64, n_blocks=16, groups=8, embed_dim=64, depths=(8,8), num_heads=(8,8), window_size=8, use_checkpoint=False, use_margin_crop=False):
+    def __init__(self, ngf=64, n_blocks=16, groups=8, embed_dim=64, depths=(8,8), num_heads=(8,8), window_size=8, use_checkpoint=False, use_margin_crop=True):
         super(SwinUnetv3RestorationNet, self).__init__()
         self.content_extractor = ContentExtractor(
             in_nc=3, out_nc=3, nf=ngf, n_blocks=n_blocks)
@@ -838,11 +838,11 @@ class DynamicAggregationRestoration(nn.Module):
                  ape=False,
                  patch_norm=True,
                  use_checkpoint=False,
-                 use_margin_crop=False
+                 use_margin_crop=True
                  ):
         super(DynamicAggregationRestoration, self).__init__()
         self.use_checkpoint = use_checkpoint
-        self.use_margin_crop = use_margin_crop  # margin tiling 대응 center-crop 토글
+        self.use_margin_crop = use_margin_crop  # margin tiling 대응 center-crop 토글 (기본 True)
         self.num_layers = len(depths)
         self.embed_dim = ngf
         self.ape = ape
@@ -950,20 +950,23 @@ class DynamicAggregationRestoration(nn.Module):
           relu3_1 (stride 4): margin = m // 4
         이를 하드코딩하지 않고 실제 텐서 크기 차이로 자동 계산한다.
 
+        4D (B,C,H,W) 와 5D (B,K,H,W,2 — pre_offset 형식) 모두 지원.
+        마지막 두 축(-2, -1)이 공간 축이라 가정한다.
+
         Args:
-            src    : (B, C, Hs, Ws) — 마진이 포함된 Ref 피처 텐서
-            target : (B, C, Ht, Wt) — 크기 기준이 되는 Content 피처 텐서
+            src    : (..., Hs, Ws) — 마진이 포함된 텐서
+            target : (..., Ht, Wt) — 크기 기준이 되는 Content 피처 텐서
 
         Returns:
-            (B, C, Ht, Wt) center-cropped 텐서
+            (..., Ht, Wt) center-cropped 텐서
         """
-        _, _, th, tw = target.shape
-        _, _, sh, sw = src.shape
+        th, tw = target.shape[-2], target.shape[-1]
+        sh, sw = src.shape[-2], src.shape[-1]
         if sh == th and sw == tw:
             return src
         dh = (sh - th) // 2
         dw = (sw - tw) // 2
-        return src[:, :, dh:dh + th, dw:dw + tw]
+        return src[..., dh:dh + th, dw:dw + tw]
 
     def flow_warp(self,
                   x,
