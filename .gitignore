@@ -12,3 +12,4 @@ build/
 *.pth
 experiments/
 *sklocal*
+*prompt*
