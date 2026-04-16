@@ -179,6 +179,8 @@ def forward_tiling(
     """
     Max-Scale Square Margin Tiling + Overlap Blending 기반 DATSR 추론.
 
+    타일 준비(CPU)와 추론(GPU)을 분리하여 batch_size 단위로 GPU를 일괄 활용한다.
+
     Args:
         lr          : (C, H_lr, W_lr) float32 [0,1] LR 텐서 (CPU)
         ref         : (C, H_ref, W_ref) float32 [0,1] Ref 텐서 (CPU)
@@ -198,71 +200,85 @@ def forward_tiling(
     pad_mode   = tiling_opt.get("padding_mode") or "reflect"
     blend_meth = tiling_opt.get("blending_method") or "gaussian"
     sigma      = float(tiling_opt.get("gaussian_sigma") or 0.5)
+    batch_size = int(tiling_opt.get("batch_size") or 1)
 
-    # ── 1. LR 타일 분할 ───────────────────────────────────────
+    # 네트워크 dtype 자동 감지 (fp16 / fp32)
+    net_dtype = next(net_g.parameters()).dtype
+
+    # ── Phase 1: CPU 에서 전체 타일 사전 계산 ────────────────────
     lr_tiles, positions, original_shape = tile_lr(
         lr, tile_size, stride, pad_mode
     )
 
-    # match_img_in: LR 를 4× bicubic 업샘플 → 대응 매칭용
-    C, H_lr, W_lr = lr.shape
+    # match_img_in: LR 를 4× bicubic 업샘플 (float32 고정 — CPU 연산 안정성)
     match_full = F.interpolate(
-        lr.unsqueeze(0),
+        lr.float().unsqueeze(0),
         scale_factor=SCALE,
         mode="bicubic",
         align_corners=False,
     ).squeeze(0)  # (C, H_lr*4, W_lr*4)
 
+    _, Mh, Mw = match_full.shape
+
+    all_lr: list    = []
+    all_ref: list   = []
+    all_match: list = []
+
+    for lr_tile, (r, c) in zip(lr_tiles, positions):
+        # Ref 타일 크롭 (Max-Scale Margin Tiling)
+        ref_tile = get_ref_tile(
+            ref, original_shape, r, c, tile_size, margin, pad_mode
+        )  # (C, final_size, final_size)
+
+        # match 타일 크롭 (HR 스케일)
+        r_hr, c_hr = r * SCALE, c * SCALE
+        ms = tile_size * SCALE
+        pb = max(0, r_hr + ms - Mh)
+        pr = max(0, c_hr + ms - Mw)
+        mwork = (
+            F.pad(match_full.unsqueeze(0), (0, pr, 0, pb), mode=pad_mode).squeeze(0)
+            if pb > 0 or pr > 0 else match_full
+        )
+        match_tile = mwork[:, r_hr:r_hr + ms, c_hr:c_hr + ms]
+
+        # match 타일을 ref 타일 크기로 리사이즈
+        _, rh, rw = ref_tile.shape
+        if match_tile.shape[1] != rh or match_tile.shape[2] != rw:
+            match_tile = F.interpolate(
+                match_tile.unsqueeze(0),
+                size=(rh, rw),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
+
+        all_lr.append(lr_tile.float())
+        all_ref.append(ref_tile.float())
+        all_match.append(match_tile)   # already float32
+
+    # ── Phase 2: GPU 배치 추론 ───────────────────────────────────
+    total    = len(all_lr)
     sr_tiles = []
-    total = len(lr_tiles)
 
     with torch.no_grad():
-        for i, (lr_tile, (r, c)) in enumerate(zip(lr_tiles, positions), 1):
+        for start in range(0, total, batch_size):
+            end = min(start + batch_size, total)
 
-            # ── 2. Ref 타일 크롭 (Max-Scale Margin Tiling) ────
-            ref_tile = get_ref_tile(
-                ref, original_shape, r, c, tile_size, margin, pad_mode
-            )  # (C, final_size, final_size)
+            # 배치 스택 → GPU 이동 → 네트워크 dtype 캐스팅
+            lr_b    = torch.stack(all_lr[start:end]).to(device=device, dtype=net_dtype)
+            ref_b   = torch.stack(all_ref[start:end]).to(device=device, dtype=net_dtype)
+            match_b = torch.stack(all_match[start:end]).to(device=device, dtype=net_dtype)
 
-            # ── 3. match 타일 크롭 (HR 스케일) ────────────────
-            r_hr, c_hr = r * SCALE, c * SCALE
-            ms = tile_size * SCALE
-            _, Mh, Mw = match_full.shape
-            pb = max(0, r_hr + ms - Mh)
-            pr = max(0, c_hr + ms - Mw)
-            mwork = (
-                F.pad(match_full.unsqueeze(0), (0, pr, 0, pb), mode=pad_mode).squeeze(0)
-                if pb > 0 or pr > 0 else match_full
-            )
-            match_tile = mwork[:, r_hr:r_hr + ms, c_hr:c_hr + ms]
-
-            # match 타일을 ref 타일 크기로 리사이즈
-            # → ContrasExtractorSep 이 동일 공간 스케일로 대응 추출
-            _, rh, rw = ref_tile.shape
-            if match_tile.shape[1] != rh or match_tile.shape[2] != rw:
-                match_tile = F.interpolate(
-                    match_tile.unsqueeze(0).float(),
-                    size=(rh, rw),
-                    mode="bilinear",
-                    align_corners=False,
-                ).squeeze(0)
-
-            # ── 4. 디바이스 이동 + 배치 차원 추가 ────────────
-            lr_b    = lr_tile.unsqueeze(0).to(device)
-            ref_b   = ref_tile.unsqueeze(0).to(device)
-            match_b = match_tile.unsqueeze(0).to(device)
-
-            # ── 5. DATSR 파이프라인 ──────────────────────────
             features             = net_extractor(match_b, ref_b)
             pre_offset, ref_feat = net_map(features, ref_b)
-            sr_tile              = net_g(lr_b, pre_offset, ref_feat)
+            sr_batch             = net_g(lr_b, pre_offset, ref_feat)
 
-            sr_tiles.append(sr_tile[0].cpu())
+            # float32 로 변환해 CPU 에 저장 (blending 정밀도 확보)
+            sr_tiles.extend(t.float().cpu() for t in sr_batch)
 
-            if i % max(1, total // 10) == 0 or i == total:
-                logger.info(f"  Tile {i}/{total}")
+            if end % max(1, total // 10) == 0 or end == total:
+                logger.info(f"  Tile {end}/{total}")
 
-    # ── 6. Overlap Blending ──────────────────────────────────
+    # ── Phase 3: Overlap Blending ────────────────────────────────
     hr = reconstruct_hr(
         sr_tiles, positions, original_shape, SCALE, blend_meth, sigma
     )
@@ -308,7 +324,7 @@ def main():
     opt["scale"] = opt.get("scale", SCALE)
     net_g, net_extractor, net_map = build_models(opt, device)
 
-    # FP16 (선택)
+    # FP16 (선택) — 네트워크만 half 로 변환; 입력 캐스팅은 forward_tiling 내부에서 처리
     if opt.get("fp16") and device.type == "cuda":
         net_g = net_g.half()
         net_extractor = net_extractor.half()
@@ -323,10 +339,6 @@ def main():
 
         lr  = load_image_tensor(lr_path)
         ref = load_image_tensor(ref_path)
-
-        if opt.get("fp16") and device.type == "cuda":
-            lr  = lr.half()
-            ref = ref.half()
 
         hr = forward_tiling(
             lr, ref, net_g, net_extractor, net_map, tiling_opt, device

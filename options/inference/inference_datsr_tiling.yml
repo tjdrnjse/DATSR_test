@@ -51,6 +51,7 @@ tiling:
   padding_mode: "reflect"   # 경계 패딩: "reflect" | "replicate" | "constant"
   blending_method: "gaussian"  # 블렌딩: "gaussian" | "linear"
   gaussian_sigma: 0.5       # Gaussian 윈도우 sigma 비율
+  batch_size: 4             # GPU 배치 크기. VRAM 여유에 따라 조정 (권장: 4~16)
 
 # ── 실행 설정 ────────────────────────────────────────────────
 gpu_ids: [0]     # CPU 전용: []

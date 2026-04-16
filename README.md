@@ -176,6 +176,7 @@ tiling:
   padding_mode: "reflect"   # Boundary padding: "reflect" | "replicate" | "constant"
   blending_method: "gaussian"  # Blend weights: "gaussian" | "linear"
   gaussian_sigma: 0.5       # Gaussian window sigma as fraction of half-width
+  batch_size: 4             # Tiles per GPU batch. Increase for faster inference (VRAM permitting)
 
 # Runtime
 gpu_ids: [0]   # Use [] for CPU-only
@@ -188,6 +189,7 @@ fp16: false    # Half-precision inference (GPU only)
 | `lr_overlap_pixels` | Wider overlap reduces seam artifacts at tile boundaries. |
 | `ref_search_margin` | Larger margin gives the correspondence module more search area. |
 | `blending_method` | `gaussian`: center-weighted smooth blend. `linear`: tent/triangular blend. |
+| `batch_size` | Number of tiles processed per GPU call. Higher = faster but more VRAM. Recommended: 4–16. |
 
 ## Visual Results
 
