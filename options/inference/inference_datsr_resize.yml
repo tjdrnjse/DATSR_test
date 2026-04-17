@@ -1,0 +1,71 @@
+##############################################################
+# DATSR Standalone Inference — Resize Tiling Mode
+#
+# 사용법:
+#   python inference.py -opt options/inference/inference_datsr_resize.yml
+#
+# 이 파일은 ref 를 lr×4 크기로 리사이즈한 뒤 1:4 비율로 타일링하는 방식을 사용.
+#
+# 적합한 상황:
+#   - ref 와 lr 이 이미 4× 비율에 가깝거나 정확히 4× 인 경우
+#   - margin tiling 의 복잡성 없이 단순하게 돌리고 싶은 경우
+#   - 벤치마크(CUFED 등) 처럼 ref 가 GT 와 동일 해상도(= lr×4)인 경우
+#
+# 주의:
+#   - ref:lr 비율이 4× 보다 크게 다를 경우 리사이즈 과정에서 ref 품질 손실 가능
+#   - use_margin_crop 은 resize 모드에서 크기가 항상 일치하므로 동작에 영향 없음
+#     (src == target 크기이면 center_crop 이 identity 반환)
+#
+# 입력 데이터 구성 (이름 매칭 규칙):
+#   dataroot_lr/  0001.png  0002.png  ...
+#   dataroot_ref/ 0001.png  0002.png  ...   ← 파일 이름이 동일해야 매칭
+##############################################################
+
+# ── 입출력 경로 ──────────────────────────────────────────────
+dataroot_lr:  data/inference/LR       # LR 이미지 폴더
+dataroot_ref: data/inference/Ref      # Ref 이미지 폴더 (LR 과 파일명 동일해야 매칭)
+output_dir:   results/inference/SR    # SR 결과 저장 폴더
+
+# ── 모델 경로 ────────────────────────────────────────────────
+pretrain_model_g:                experiments/pretrained_model/restoration_mse.pth
+pretrain_model_extractor:        experiments/pretrained_model.pth
+scale: 4
+
+# ── 네트워크 구조 ────────────────────────────────────────────
+network_g:
+  type: SwinUnetv3RestorationNet
+  ngf: 128
+  n_blocks: 8
+  groups: 8
+  embed_dim: 128
+  depths: [4, 4]
+  num_heads: [4, 4]
+  window_size: 8
+  use_checkpoint: false
+  use_margin_crop: true     # resize 모드에서는 항상 크기가 일치하므로 실질적으로 무동작
+
+network_map:
+  type: FlowSimCorrespondenceGenerationArch
+  patch_size: 3
+  stride: 1
+  vgg_layer_list: ['relu1_1', 'relu2_1', 'relu3_1']
+  vgg_type: 'vgg19'
+  vgg_pretrained_path: ~  # 로컬 경로 지정 시 자동 다운로드 대신 사용. 예: experiments/pretrained_model/vgg19.pth
+
+network_extractor:
+  type: ContrasExtractorSep
+
+# ── 타일링 설정 ──────────────────────────────────────────────
+tiling:
+  mode: "resize"            # ref 를 lr×4 로 bicubic 리사이즈 후 1:4 단순 타일링
+  lr_tile_size: 64          # LR 타일 한 변 크기. 낮출수록 VRAM 절약 (권장: 64~128)
+  lr_overlap_pixels: 16     # 타일 간 겹침 픽셀. Stride = lr_tile_size - lr_overlap_pixels
+  # ref_search_margin 은 resize 모드에서 사용되지 않음
+  padding_mode: "reflect"   # 경계 패딩: "reflect" | "replicate" | "constant"
+  blending_method: "gaussian"  # 블렌딩: "gaussian" | "linear"
+  gaussian_sigma: 0.5       # Gaussian 윈도우 sigma 비율
+  batch_size: 4             # GPU 배치 크기. VRAM 여유에 따라 조정 (권장: 4~16)
+
+# ── 실행 설정 ────────────────────────────────────────────────
+gpu_ids: [0]     # CPU 전용: []
+fp16: false      # half-precision inference (GPU 전용)
