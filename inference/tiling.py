@@ -142,6 +142,9 @@ def get_ref_tile(
     # ── 2. Base / Final 크기 ─────────────────────────────────────
     base_size  = int(math.ceil(lr_tile_size * max_scale))
     final_size = base_size + 2 * ref_search_margin
+    # Extractor(VGG16, stride=4)와 VGG19(stride=1)의 출력 해상도가 일치하려면
+    # final_size 가 4의 배수여야 함. 비정수 배율에서 생기는 1~3px 차이를 방지.
+    final_size = math.ceil(final_size / 4) * 4
 
     # ── 3. LR 타일 중심 → 상대 좌표 → Ref 중심 ──────────────────
     lr_cy = lr_tile_top  + lr_tile_size / 2.0
