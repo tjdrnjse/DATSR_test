@@ -27,6 +27,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image
 import torch
 import torch.nn.functional as F
 import yaml
@@ -231,15 +232,12 @@ def forward_tiling(
 
     _, Mh, Mw = match_full.shape
 
-    # "resize" 모드: ref 를 lr×4 크기로 한 번만 리사이즈
+    # "resize" 모드: ref 를 lr×4 크기로 한 번만 리사이즈 (PIL LANCZOS — 훈련과 동일한 전처리)
     if mode == "resize":
-        ref_resized = F.interpolate(
-            ref.float().unsqueeze(0),
-            size=(Mh, Mw),
-            mode="bicubic",
-            align_corners=False,
-        ).squeeze(0)  # (C, H_lr*4, W_lr*4)
-        logger.info(f"[resize mode] ref resized: {tuple(ref.shape[1:])} → ({Mh},{Mw})")
+        ref_np = (ref.float().permute(1, 2, 0).numpy() * 255).clip(0, 255).astype(np.uint8)
+        ref_pil = Image.fromarray(ref_np).resize((Mw, Mh), Image.LANCZOS)
+        ref_resized = torch.from_numpy(np.array(ref_pil)).permute(2, 0, 1).float() / 255.0
+        logger.info(f"[resize mode] ref resized (PIL LANCZOS): {tuple(ref.shape[1:])} → ({Mh},{Mw})")
 
     all_lr: list    = []
     all_ref: list   = []
