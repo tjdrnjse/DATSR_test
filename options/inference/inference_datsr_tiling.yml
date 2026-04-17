@@ -47,9 +47,11 @@ network_extractor:
 
 # ── 타일링 설정 ──────────────────────────────────────────────
 tiling:
+  mode: "margin"            # "margin": Max-Scale Margin Tiling (ref 원본 해상도 보존, 비정수 배율 지원)
+                            # "resize": ref 를 lr×4 로 리사이즈 후 1:4 단순 타일링 (항상 정수배율)
   lr_tile_size: 64          # LR 타일 한 변 크기. 낮출수록 VRAM 절약 (권장: 64~128)
   lr_overlap_pixels: 16     # 타일 간 겹침 픽셀. Stride = lr_tile_size - lr_overlap_pixels
-  ref_search_margin: 64     # Base Ref 타일에서 상하좌우 확장 마진 (픽셀)
+  ref_search_margin: 64     # Base Ref 타일에서 상하좌우 확장 마진 (픽셀). mode="margin" 일 때만 사용
   padding_mode: "reflect"   # 경계 패딩: "reflect" | "replicate" | "constant"
   blending_method: "gaussian"  # 블렌딩: "gaussian" | "linear"
   gaussian_sigma: 0.5       # Gaussian 윈도우 sigma 비율

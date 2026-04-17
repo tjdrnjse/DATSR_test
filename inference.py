@@ -181,9 +181,13 @@ def forward_tiling(
     device: torch.device,
 ) -> torch.Tensor:
     """
-    Max-Scale Square Margin Tiling + Overlap Blending 기반 DATSR 추론.
+    Tiling + Overlap Blending 기반 DATSR 추론.
 
-    타일 준비(CPU)와 추론(GPU)을 분리하여 batch_size 단위로 GPU를 일괄 활용한다.
+    tiling.mode 에 따라 두 가지 방식 중 하나를 선택한다:
+      "margin" (기본): Max-Scale Square Margin Tiling
+                       ref:lr 비율이 비정수여도 원본 ref 해상도를 보존.
+      "resize"        : ref 를 lr×4 크기로 리사이즈한 뒤 1:4 비율로 타일링.
+                       항상 tile_size×4 정방형 ref 타일 → margin/crop 불필요.
 
     Args:
         lr          : (C, H_lr, W_lr) float32 [0,1] LR 텐서 (CPU)
@@ -197,14 +201,17 @@ def forward_tiling(
     Returns:
         hr : (C, H_lr*4, W_lr*4) float32 [0,1] HR 텐서 (CPU)
     """
+    mode       = (tiling_opt.get("mode") or "margin").lower()
     tile_size  = int(tiling_opt["lr_tile_size"])
     overlap    = int(tiling_opt["lr_overlap_pixels"])
     stride     = tile_size - overlap
-    margin     = int(tiling_opt["ref_search_margin"])
     pad_mode   = tiling_opt.get("padding_mode") or "reflect"
     blend_meth = tiling_opt.get("blending_method") or "gaussian"
     sigma      = float(tiling_opt.get("gaussian_sigma") or 0.5)
     batch_size = int(tiling_opt.get("batch_size") or 1)
+
+    if mode == "margin":
+        margin = int(tiling_opt["ref_search_margin"])
 
     # 네트워크 dtype 자동 감지 (fp16 / fp32)
     net_dtype = next(net_g.parameters()).dtype
@@ -224,36 +231,62 @@ def forward_tiling(
 
     _, Mh, Mw = match_full.shape
 
+    # "resize" 모드: ref 를 lr×4 크기로 한 번만 리사이즈
+    if mode == "resize":
+        ref_resized = F.interpolate(
+            ref.float().unsqueeze(0),
+            size=(Mh, Mw),
+            mode="bicubic",
+            align_corners=False,
+        ).squeeze(0)  # (C, H_lr*4, W_lr*4)
+        logger.info(f"[resize mode] ref resized: {tuple(ref.shape[1:])} → ({Mh},{Mw})")
+
     all_lr: list    = []
     all_ref: list   = []
     all_match: list = []
 
     for lr_tile, (r, c) in zip(lr_tiles, positions):
-        # Ref 타일 크롭 (Max-Scale Margin Tiling)
-        ref_tile = get_ref_tile(
-            ref, original_shape, r, c, tile_size, margin, pad_mode
-        )  # (C, final_size, final_size)
-
-        # match 타일 크롭 (HR 스케일)
         r_hr, c_hr = r * SCALE, c * SCALE
-        ms = tile_size * SCALE
-        pb = max(0, r_hr + ms - Mh)
-        pr = max(0, c_hr + ms - Mw)
-        mwork = (
-            F.pad(match_full.unsqueeze(0), (0, pr, 0, pb), mode=pad_mode).squeeze(0)
-            if pb > 0 or pr > 0 else match_full
-        )
-        match_tile = mwork[:, r_hr:r_hr + ms, c_hr:c_hr + ms]
+        ms         = tile_size * SCALE
 
-        # match 타일을 ref 타일 크기로 리사이즈
-        _, rh, rw = ref_tile.shape
-        if match_tile.shape[1] != rh or match_tile.shape[2] != rw:
-            match_tile = F.interpolate(
-                match_tile.unsqueeze(0),
-                size=(rh, rw),
-                mode="bilinear",
-                align_corners=False,
-            ).squeeze(0)
+        if mode == "resize":
+            # ref 타일과 match 타일을 동일 위치·동일 크기로 크롭 (경계 패딩 공유)
+            pb = max(0, r_hr + ms - Mh)
+            pr = max(0, c_hr + ms - Mw)
+            if pb > 0 or pr > 0:
+                pad_kwargs = dict(mode=pad_mode)
+                match_work = F.pad(match_full.unsqueeze(0),    (0, pr, 0, pb), **pad_kwargs).squeeze(0)
+                ref_work   = F.pad(ref_resized.unsqueeze(0),   (0, pr, 0, pb), **pad_kwargs).squeeze(0)
+            else:
+                match_work, ref_work = match_full, ref_resized
+
+            ref_tile   = ref_work  [:, r_hr:r_hr + ms, c_hr:c_hr + ms]
+            match_tile = match_work[:, r_hr:r_hr + ms, c_hr:c_hr + ms]
+
+        else:  # "margin"
+            # Ref 타일 크롭 (Max-Scale Margin Tiling)
+            ref_tile = get_ref_tile(
+                ref, original_shape, r, c, tile_size, margin, pad_mode
+            )  # (C, final_size, final_size)
+
+            # match 타일 크롭 (HR 스케일)
+            pb = max(0, r_hr + ms - Mh)
+            pr = max(0, c_hr + ms - Mw)
+            mwork = (
+                F.pad(match_full.unsqueeze(0), (0, pr, 0, pb), mode=pad_mode).squeeze(0)
+                if pb > 0 or pr > 0 else match_full
+            )
+            match_tile = mwork[:, r_hr:r_hr + ms, c_hr:c_hr + ms]
+
+            # match 타일을 ref 타일 크기로 리사이즈
+            _, rh, rw = ref_tile.shape
+            if match_tile.shape[1] != rh or match_tile.shape[2] != rw:
+                match_tile = F.interpolate(
+                    match_tile.unsqueeze(0),
+                    size=(rh, rw),
+                    mode="bilinear",
+                    align_corners=False,
+                ).squeeze(0)
 
         all_lr.append(lr_tile.float())
         all_ref.append(ref_tile.float())
